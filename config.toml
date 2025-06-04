@@ -1,16 +1,65 @@
-camera_count = 17
-creation_date = 2024-12-13T15:19:05.947633
-fps_sync_stream_processing = 100
-save_tracked_points_video = true
+# 113Camera1 项目配置文件
 
-[charuco]
-columns = 4
-rows = 5
-board_height = 14.0
-board_width = 10.0
-dictionary = "DICT_4X4_50"
-units = "cm"
-aruco_scale = 0.75
-square_size_overide_cm = 5.4
-inverted = false
-legacy_pattern = false
+[project]
+name = "113Camera1"
+version = "2.0.0"
+description = "多相机计算机视觉系统"
+author = "Yknighter424"
+email = "godlieluyu@gmail.com"
+
+[camera]
+# 相机配置
+default_resolution_width = 1920
+default_resolution_height = 1200
+fps = 30
+
+# 标定参数
+chessboard_nx = 9  # 棋盘格水平角点数
+chessboard_ny = 6  # 棋盘格垂直角点数
+square_size = 3.0  # 棋盘格方格尺寸(mm)
+
+[paths]
+# 文件路径配置
+calibration_data_dir = "./calibration_data/"
+output_dir = "./output/"
+temp_dir = "./temp/"
+
+# 模型文件路径
+mediapipe_model = "pose_landmarker_full.task"
+
+# 标定文件路径
+stereo_calibration = "stereo_camera_calibration.npz"
+triple_calibration = "triple_camera_calibration.npz"
+single_calibration = "single_camera_calibration.npz"
+
+[aruco]
+# ArUco标记配置
+dictionary = "DICT_ARUCO_ORIGINAL"
+marker_length = 160  # 标记长度(mm)
+marker_gap = 30      # 标记间距(mm)
+
+[processing]
+# 处理参数
+smoothing_window = 7
+polynomial_order = 3
+optimization_iterations = 100
+reprojection_threshold = 0.5
+
+# 性能配置
+enable_gpu = true
+max_threads = 12
+memory_limit_gb = 8
+
+[visualization]
+# 可视化配置
+show_3d_plots = true
+save_animations = true
+animation_fps = 30
+figure_size_width = 12
+figure_size_height = 8
+
+[logging]
+# 日志配置
+level = "INFO"
+log_file = "project.log"
+enable_console_output = true

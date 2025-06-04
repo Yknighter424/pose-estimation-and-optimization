@@ -1,0 +1,48 @@
+# 113Camera1 项目依赖包
+# 计算机视觉和机器学习
+
+# 核心计算机视觉库
+opencv-python>=4.5.0
+opencv-contrib-python>=4.5.0
+
+# 数值计算和科学计算
+numpy>=1.19.0
+scipy>=1.6.0
+matplotlib>=3.3.0
+pandas>=1.3.0
+
+# 机器学习和姿态估计
+mediapipe>=0.10.0
+
+# 3D可视化和图形处理
+pyvista>=0.40.0
+pyvistaqt>=0.9.0
+
+# 优化算法
+scikit-learn>=1.0.0
+
+# 图像处理和分析
+Pillow>=8.0.0
+scikit-image>=0.18.0
+
+# 视频处理
+ffmpeg-python>=0.2.0
+
+# 配置文件处理
+toml>=0.10.0
+
+# 数据保存和加载
+h5py>=3.0.0
+
+# 并行处理
+joblib>=1.0.0
+
+# 进度条显示
+tqdm>=4.60.0
+
+# 测试框架（可选）
+pytest>=6.0.0
+
+# 开发工具（可选）
+black>=21.0.0
+flake8>=3.8.0 

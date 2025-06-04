@@ -135,9 +135,9 @@
 - `mobile40111.mp4` / `mobile38.mp4` - 测试视频（已通过.gitignore排除）
 
 ### 配置文件
-- `config.toml` - 项目配置
+- `config.toml` - 项目配置（相机参数、路径、处理选项）
 - `skeleton_config.json` - 骨骼结构配置
-- `package.json` / `package-lock.json` - 依赖管理
+- `requirements.txt` - Python依赖管理
 
 ### 环境检测与安装
 - `check_env.py` - 环境检查脚本
@@ -182,11 +182,14 @@ cd pose-estimation-and-optimization
 
 ### 2. 安装依赖
 ```bash
-# 使用提供的安装脚本
+# 使用requirements.txt安装所有依赖
+pip install -r requirements.txt
+
+# 或使用提供的安装脚本
 install_packages.bat
 
-# 或手动安装
-pip install -r requirements.txt  # 如果有requirements.txt文件
+# 或手动安装核心依赖
+pip install opencv-python numpy scipy matplotlib mediapipe pyvista
 ```
 
 ### 3. 环境验证
@@ -248,6 +251,27 @@ python GOM_test.py
 
 # 性能测试
 python 20241030_final.py
+```
+
+### 示例4: 使用配置文件
+```python
+import toml
+
+# 加载项目配置
+config = toml.load('config.toml')
+
+# 获取相机参数
+width = config['camera']['default_resolution_width']
+height = config['camera']['default_resolution_height']
+fps = config['camera']['fps']
+
+# 获取文件路径
+model_path = config['paths']['mediapipe_model']
+calib_path = config['paths']['stereo_calibration']
+
+# 获取处理参数
+smooth_window = config['processing']['smoothing_window']
+threshold = config['processing']['reprojection_threshold']
 ```
 
 ## 技术特性
@@ -323,6 +347,27 @@ from 113ARfinally import get_aruco_axis
 
 # ArUco检测和姿态估计
 R, t, img_result = get_aruco_axis(img_left, img_right, detector, board_coord, cam_params)
+```
+
+### 示例4: 使用配置文件
+```python
+import toml
+
+# 加载项目配置
+config = toml.load('config.toml')
+
+# 获取相机参数
+width = config['camera']['default_resolution_width']
+height = config['camera']['default_resolution_height']
+fps = config['camera']['fps']
+
+# 获取文件路径
+model_path = config['paths']['mediapipe_model']
+calib_path = config['paths']['stereo_calibration']
+
+# 获取处理参数
+smooth_window = config['processing']['smoothing_window']
+threshold = config['processing']['reprojection_threshold']
 ```
 
 ## 性能指标
