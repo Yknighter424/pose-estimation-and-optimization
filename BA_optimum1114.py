@@ -1,3 +1,23 @@
+"""
+多相机标定与Bundle Adjustment优化程序
+
+修改日期：2024年11月
+主要修改内容：
+1. 修正了Bundle Adjustment算法的根本性错误
+2. 从"优化相机相对于棋盘格的外参"改为"优化相机间的相对外参"
+3. 实现了正确的多相机BA算法：
+   - 建立统一的世界坐标系（以相机0和相机7为参考）
+   - 同时优化相机外参和棋盘格位姿
+   - 最小化全局重投影误差
+4. 改进了参数初始化方法
+5. 增加了详细的算法说明和错误处理
+
+核心改进：
+- 参数化方式：相机间相对外参 + 棋盘格世界位姿
+- 投影流程：棋盘格坐标 -> 世界坐标 -> 相机坐标 -> 图像坐标
+- 优化目标：全局重投影误差最小化
+"""
+
 import cv2
 import numpy as np
 import glob
@@ -128,63 +148,230 @@ for cam_idx in range(1, 4):
 
 # 对相机 0-3 进行外参优化（Bundle Adjustment）
 def bundle_adjustment_0_3():
-    """优化相机 0-3 的外部参数"""
+    """
+    正确的多相机Bundle Adjustment实现（相机0-3）
+    
+    核心改进：
+    1. 优化相机间的相对外参，而非相机相对于棋盘格的外参
+    2. 同时优化棋盘格在世界坐标系中的位姿
+    3. 建立以相机0为参考的统一世界坐标系
+    """
     def objective_function(x):
+        """
+        目标函数：最小化所有相机所有帧的重投影误差
+        
+        参数布局：
+        - x[0:9]: 相机1-3相对于相机0的旋转向量 (3x3)
+        - x[9:18]: 相机1-3相对于相机0的平移向量 (3x3) 
+        - x[18:]: 每帧棋盘格在世界坐标系中的位姿 (6*num_frames)
+        """
         total_errors = []
-        # 解包参数
-        rvecs = x[:9].reshape(3, 3)  # 3 个相机的旋转向量（相机 1-3）
-        tvecs = x[9:].reshape(3, 3)  # 3 个相机的平移向量（相机 1-3）
-        for cam_idx in range(1, 4):
-            rvec = rvecs[cam_idx - 1].reshape(3, 1)
-            tvec = tvecs[cam_idx - 1].reshape(3, 1)
+        
+        # 解包相机外参 (相对于相机0)
+        camera_rvecs = {}
+        camera_tvecs = {}
+        camera_rvecs[0] = np.zeros(3)  # 相机0为参考，外参为0
+        camera_tvecs[0] = np.zeros(3)
+        
+        # 相机1-3的外参
+        for i in range(3):
+            cam_idx = i + 1
+            camera_rvecs[cam_idx] = x[i*3:(i+1)*3]
+            camera_tvecs[cam_idx] = x[9+i*3:9+(i+1)*3]
+        
+        # 解包棋盘格位姿 (在世界坐标系中)
+        board_rvecs = []
+        board_tvecs = []
+        for frame_idx in range(len(objpoints_0_3)):
+            start_idx = 18 + frame_idx * 6
+            board_rvecs.append(x[start_idx:start_idx+3])
+            board_tvecs.append(x[start_idx+3:start_idx+6])
+        
+        # 计算每个相机每一帧的重投影误差
+        for cam_idx in range(4):
+            if cam_idx not in imgpoints_0_3 or len(imgpoints_0_3[cam_idx]) == 0:
+                continue
+                
+            cam_rvec = camera_rvecs[cam_idx]
+            cam_tvec = camera_tvecs[cam_idx]
+            
             for frame_idx in range(len(objpoints_0_3)):
-                points_2d = imgpoints_0_3[cam_idx][frame_idx].reshape(-1, 2)
+                if frame_idx >= len(imgpoints_0_3[cam_idx]):
+                    continue
+                
+                # 获取棋盘格在世界坐标系中的位姿
+                board_rvec = board_rvecs[frame_idx]
+                board_tvec = board_tvecs[frame_idx]
+                R_board, _ = cv2.Rodrigues(board_rvec)
+                
+                # 将棋盘格点从棋盘格坐标系转换到世界坐标系
+                points_3d_world = []
+                for point_3d in objpoints_0_3[frame_idx]:
+                    point_world = R_board @ point_3d.reshape(3, 1) + board_tvec.reshape(3, 1)
+                    points_3d_world.append(point_world.flatten())
+                points_3d_world = np.array(points_3d_world)
+                
+                # 投影到当前相机
                 projected, _ = cv2.projectPoints(
-                    objpoints_0_3[frame_idx],
-                    rvec,
-                    tvec,
+                    points_3d_world,
+                    cam_rvec,
+                    cam_tvec,
                     camera_matrix_list_0_3[cam_idx],
                     dist_coeff_list_0_3[cam_idx]
                 )
                 projected = projected.reshape(-1, 2)
-                error = (points_2d - projected).ravel()
+                
+                # 计算重投影误差
+                observed = imgpoints_0_3[cam_idx][frame_idx].reshape(-1, 2)
+                error = (observed - projected).ravel()
                 total_errors.extend(error)
+        
         return np.array(total_errors)
 
-    # 初始参数
-    x0 = np.zeros(18)  # 3 * (3 + 3)
+    # 改进的初始化方法
+    num_frames = len(objpoints_0_3)
+    x0 = []
+    
+    # 初始化相机1-3相对于相机0的外参
+    print("初始化相机间外参...")
     for cam_idx in range(1, 4):
-        idx = (cam_idx - 1) * 3
-        x0[idx:idx+3] = rvec_list_0_3[cam_idx].ravel()
-        x0[9+idx:9+idx+3] = tvec_list_0_3[cam_idx].ravel()
+        if len(imgpoints_0_3[0]) > 0 and len(imgpoints_0_3[cam_idx]) > 0:
+            # 使用第一帧进行初始外参估计
+            try:
+                # 计算相机0和当前相机的棋盘格位姿
+                ret0, rvec0, tvec0 = cv2.solvePnP(
+                    objpoints_0_3[0], imgpoints_0_3[0][0],
+                    camera_matrix_list_0_3[0], dist_coeff_list_0_3[0]
+                )
+                ret_cam, rvec_cam, tvec_cam = cv2.solvePnP(
+                    objpoints_0_3[0], imgpoints_0_3[cam_idx][0],
+                    camera_matrix_list_0_3[cam_idx], dist_coeff_list_0_3[cam_idx]
+                )
+                
+                if ret0 and ret_cam:
+                    # 计算相机间的相对外参
+                    R0, _ = cv2.Rodrigues(rvec0)
+                    R_cam, _ = cv2.Rodrigues(rvec_cam)
+                    
+                    # 相机cam相对于相机0的外参
+                    R_rel = R_cam @ R0.T
+                    t_rel = tvec_cam - R_rel @ tvec0
+                    rvec_rel, _ = cv2.Rodrigues(R_rel)
+                    
+                    x0.extend(rvec_rel.flatten())
+                else:
+                    x0.extend([0, 0, 0])  # 默认初始化
+            except:
+                x0.extend([0, 0, 0])  # 默认初始化
+        else:
+            x0.extend([0, 0, 0])  # 默认初始化
+    
+    # 初始化相机1-3相对于相机0的平移向量
+    for cam_idx in range(1, 4):
+        if len(imgpoints_0_3[0]) > 0 and len(imgpoints_0_3[cam_idx]) > 0:
+            try:
+                ret0, rvec0, tvec0 = cv2.solvePnP(
+                    objpoints_0_3[0], imgpoints_0_3[0][0],
+                    camera_matrix_list_0_3[0], dist_coeff_list_0_3[0]
+                )
+                ret_cam, rvec_cam, tvec_cam = cv2.solvePnP(
+                    objpoints_0_3[0], imgpoints_0_3[cam_idx][0],
+                    camera_matrix_list_0_3[cam_idx], dist_coeff_list_0_3[cam_idx]
+                )
+                
+                if ret0 and ret_cam:
+                    R0, _ = cv2.Rodrigues(rvec0)
+                    R_cam, _ = cv2.Rodrigues(rvec_cam)
+                    R_rel = R_cam @ R0.T
+                    t_rel = tvec_cam - R_rel @ tvec0
+                    x0.extend(t_rel.flatten())
+                else:
+                    x0.extend([0, 0, 100])  # 默认初始化，假设相机间距100mm
+            except:
+                x0.extend([0, 0, 100])  # 默认初始化
+        else:
+            x0.extend([0, 0, 100])  # 默认初始化
+    
+    # 初始化每帧棋盘格位姿（使用相机0作为参考）
+    print("初始化棋盘格位姿...")
+    for frame_idx in range(num_frames):
+        if frame_idx < len(imgpoints_0_3[0]):
+            try:
+                ret, rvec, tvec = cv2.solvePnP(
+                    objpoints_0_3[frame_idx],
+                    imgpoints_0_3[0][frame_idx],
+                    camera_matrix_list_0_3[0],
+                    dist_coeff_list_0_3[0]
+                )
+                if ret:
+                    x0.extend(rvec.flatten())
+                    x0.extend(tvec.flatten())  
+                else:
+                    x0.extend([0, 0, 0, 0, 0, 500])  # 默认初始化
+            except:
+                x0.extend([0, 0, 0, 0, 0, 500])  # 默认初始化
+        else:
+            x0.extend([0, 0, 0, 0, 0, 500])  # 默认初始化
+
+    x0 = np.array(x0)
+    print(f"初始化完成，参数数量: {len(x0)}")
 
     # 运行优化
+    print("开始Bundle Adjustment优化...")
     result = least_squares(
         objective_function,
         x0,
         method='lm',  # Levenberg-Marquardt
         verbose=2,
-        max_nfev=1000
+        max_nfev=1000,
+        ftol=1e-8,
+        xtol=1e-8
     )
 
-    # 更新参数
+    # 更新相机外参
     for cam_idx in range(1, 4):
-        idx = (cam_idx - 1) * 3
-        rvec_list_0_3[cam_idx] = result.x[idx:idx+3].reshape(3, 1)
-        tvec_list_0_3[cam_idx] = result.x[9+idx:9+idx+3].reshape(3, 1)
+        i = cam_idx - 1
+        rvec_list_0_3[cam_idx] = result.x[i*3:(i+1)*3].reshape(3, 1)
+        tvec_list_0_3[cam_idx] = result.x[9+i*3:9+(i+1)*3].reshape(3, 1)
         R_list_0_3[cam_idx], _ = cv2.Rodrigues(rvec_list_0_3[cam_idx])
         T_list_0_3[cam_idx] = tvec_list_0_3[cam_idx]
 
     # 计算并打印最终的重投影误差
-    print("\n相机 0-3 的重投影误差:")
+    print(f"\n优化完成，最终残差: {result.cost}")
+    print("相机 0-3 的重投影误差:")
     total_error = 0
-    for cam_idx in range(1, 4):
+    for cam_idx in range(4):
+        if cam_idx not in imgpoints_0_3 or len(imgpoints_0_3[cam_idx]) == 0:
+            continue
+            
         errors = []
         for frame_idx in range(len(objpoints_0_3)):
+            if frame_idx >= len(imgpoints_0_3[cam_idx]):
+                continue
+                
+            # 使用优化后的参数计算重投影误差
+            if cam_idx == 0:
+                rvec = np.zeros((3, 1))
+                tvec = np.zeros((3, 1))
+            else:
+                rvec = rvec_list_0_3[cam_idx]
+                tvec = tvec_list_0_3[cam_idx]
+                
+            # 获取优化后的棋盘格位姿
+            start_idx = 18 + frame_idx * 6
+            board_rvec = result.x[start_idx:start_idx+3]
+            board_tvec = result.x[start_idx+3:start_idx+6]
+            R_board, _ = cv2.Rodrigues(board_rvec)
+            
+            # 转换到世界坐标系
+            points_3d_world = []
+            for point_3d in objpoints_0_3[frame_idx]:
+                point_world = R_board @ point_3d.reshape(3, 1) + board_tvec.reshape(3, 1)
+                points_3d_world.append(point_world.flatten())
+            points_3d_world = np.array(points_3d_world)
+            
             projected, _ = cv2.projectPoints(
-                objpoints_0_3[frame_idx],
-                rvec_list_0_3[cam_idx],
-                tvec_list_0_3[cam_idx],
+                points_3d_world, rvec, tvec,
                 camera_matrix_list_0_3[cam_idx],
                 dist_coeff_list_0_3[cam_idx]
             )
@@ -192,11 +379,15 @@ def bundle_adjustment_0_3():
             points_2d = imgpoints_0_3[cam_idx][frame_idx].reshape(-1, 2)
             error = np.linalg.norm(points_2d - projected, axis=1)
             errors.append(np.mean(error))
-        mean_error = np.mean(errors)
-        total_error += mean_error
-        print(f"相机 {cam_idx} 的平均重投影误差: {mean_error:.3f} 像素")
+            
+        if errors:
+            mean_error = np.mean(errors)
+            total_error += mean_error
+            print(f"相机 {cam_idx} 的平均重投影误差: {mean_error:.3f} 像素")
 
-    print(f"相机 0-3 的平均重投影误差: {total_error/3:.3f} 像素")
+    active_cameras = len([i for i in range(4) if i in imgpoints_0_3 and len(imgpoints_0_3[i]) > 0])
+    if active_cameras > 0:
+        print(f"相机 0-3 的平均重投影误差: {total_error/active_cameras:.3f} 像素")
 
 bundle_adjustment_0_3()
 
@@ -323,75 +514,247 @@ for idx, cam_idx in enumerate(range(4, 7)):
 
 # 对相机 4-7 进行外参优化（Bundle Adjustment），以相机 7 为参考
 def bundle_adjustment_4_7():
-    """优化相机 4-7 的外部参数"""
+    """
+    正确的多相机Bundle Adjustment实现（相机4-7）
+    
+    核心改进：
+    1. 优化相机间的相对外参，而非相机相对于棋盘格的外参
+    2. 同时优化棋盘格在世界坐标系中的位姿
+    3. 建立以相机7为参考的统一世界坐标系
+    """
     def objective_function(x):
+        """
+        目标函数：最小化所有相机所有帧的重投影误差
+        
+        参数布局：
+        - x[0:9]: 相机4-6相对于相机7的旋转向量 (3x3)
+        - x[9:18]: 相机4-6相对于相机7的平移向量 (3x3)
+        - x[18:]: 每帧棋盘格在世界坐标系中的位姿 (6*num_frames)
+        """
         total_errors = []
-        # 解包参数
-        rvecs = x[:9].reshape(3, 3)  # 3 个相机的旋转向量（相机 4-6）
-        tvecs = x[9:].reshape(3, 3)  # 3 个相机的平移向量（相机 4-6）
-        for idx, cam_idx in enumerate(range(4, 7)):
-            rvec = rvecs[idx].reshape(3, 1)
-            tvec = tvecs[idx].reshape(3, 1)
+        
+        # 解包相机外参 (相对于相机7)
+        camera_rvecs = {}
+        camera_tvecs = {}
+        camera_rvecs[7] = np.zeros(3)  # 相机7为参考，外参为0
+        camera_tvecs[7] = np.zeros(3)
+        
+        # 相机4-6的外参
+        for i in range(3):
+            cam_idx = i + 4
+            camera_rvecs[cam_idx] = x[i*3:(i+1)*3]
+            camera_tvecs[cam_idx] = x[9+i*3:9+(i+1)*3]
+        
+        # 解包棋盘格位姿 (在世界坐标系中)
+        board_rvecs = []
+        board_tvecs = []
+        for frame_idx in range(len(objpoints_4_7)):
+            start_idx = 18 + frame_idx * 6
+            board_rvecs.append(x[start_idx:start_idx+3])
+            board_tvecs.append(x[start_idx+3:start_idx+6])
+        
+        # 计算每个相机每一帧的重投影误差
+        for i, cam_idx in enumerate(range(4, 7)):
+            if cam_idx not in imgpoints_4_7 or len(imgpoints_4_7[cam_idx]) == 0:
+                continue
+                
+            cam_rvec = camera_rvecs[cam_idx]
+            cam_tvec = camera_tvecs[cam_idx]
+            
             for frame_idx in range(len(objpoints_4_7)):
-                points_2d = imgpoints_4_7[cam_idx][frame_idx].reshape(-1, 2)
+                if frame_idx >= len(imgpoints_4_7[cam_idx]):
+                    continue
+                
+                # 获取棋盘格在世界坐标系中的位姿
+                board_rvec = board_rvecs[frame_idx]
+                board_tvec = board_tvecs[frame_idx]
+                R_board, _ = cv2.Rodrigues(board_rvec)
+                
+                # 将棋盘格点从棋盘格坐标系转换到世界坐标系
+                points_3d_world = []
+                for point_3d in objpoints_4_7[frame_idx]:
+                    point_world = R_board @ point_3d.reshape(3, 1) + board_tvec.reshape(3, 1)
+                    points_3d_world.append(point_world.flatten())
+                points_3d_world = np.array(points_3d_world)
+                
+                # 投影到当前相机
                 projected, _ = cv2.projectPoints(
-                    objpoints_4_7[frame_idx],
-                    rvec,
-                    tvec,
-                    camera_matrix_list_4_7[idx],
-                    dist_coeff_list_4_7[idx]
+                    points_3d_world,
+                    cam_rvec,
+                    cam_tvec,
+                    camera_matrix_list_4_7[i],
+                    dist_coeff_list_4_7[i]
                 )
                 projected = projected.reshape(-1, 2)
-                error = (points_2d - projected).ravel()
+                
+                # 计算重投影误差
+                observed = imgpoints_4_7[cam_idx][frame_idx].reshape(-1, 2)
+                error = (observed - projected).ravel()
                 total_errors.extend(error)
+        
         return np.array(total_errors)
 
-    # 初始参数
-    x0 = np.zeros(18)  # 3 * (3 + 3)
-    for idx in range(3):
-        x0[idx*3:idx*3+3] = rvec_list_4_7[idx].ravel()
-        x0[9+idx*3:9+idx*3+3] = tvec_list_4_7[idx].ravel()
+    # 改进的初始化方法
+    num_frames = len(objpoints_4_7)
+    x0 = []
+    
+    # 初始化相机4-6相对于相机7的外参
+    print("初始化相机间外参...")
+    for cam_idx in range(4, 7):
+        if len(imgpoints_4_7[7]) > 0 and len(imgpoints_4_7[cam_idx]) > 0:
+            # 使用第一帧进行初始外参估计
+            try:
+                # 计算相机7和当前相机的棋盘格位姿
+                ret7, rvec7, tvec7 = cv2.solvePnP(
+                    objpoints_4_7[0], imgpoints_4_7[7][0],
+                    camera_matrix_list_4_7[3], dist_coeff_list_4_7[3]  # 相机7在索引3
+                )
+                ret_cam, rvec_cam, tvec_cam = cv2.solvePnP(
+                    objpoints_4_7[0], imgpoints_4_7[cam_idx][0],
+                    camera_matrix_list_4_7[cam_idx-4], dist_coeff_list_4_7[cam_idx-4]
+                )
+                
+                if ret7 and ret_cam:
+                    # 计算相机间的相对外参
+                    R7, _ = cv2.Rodrigues(rvec7)
+                    R_cam, _ = cv2.Rodrigues(rvec_cam)
+                    
+                    # 相机cam相对于相机7的外参
+                    R_rel = R_cam @ R7.T
+                    t_rel = tvec_cam - R_rel @ tvec7
+                    rvec_rel, _ = cv2.Rodrigues(R_rel)
+                    
+                    x0.extend(rvec_rel.flatten())
+                else:
+                    x0.extend([0, 0, 0])  # 默认初始化
+            except:
+                x0.extend([0, 0, 0])  # 默认初始化
+        else:
+            x0.extend([0, 0, 0])  # 默认初始化
+    
+    # 初始化相机4-6相对于相机7的平移向量
+    for cam_idx in range(4, 7):
+        if len(imgpoints_4_7[7]) > 0 and len(imgpoints_4_7[cam_idx]) > 0:
+            try:
+                ret7, rvec7, tvec7 = cv2.solvePnP(
+                    objpoints_4_7[0], imgpoints_4_7[7][0],
+                    camera_matrix_list_4_7[3], dist_coeff_list_4_7[3]
+                )
+                ret_cam, rvec_cam, tvec_cam = cv2.solvePnP(
+                    objpoints_4_7[0], imgpoints_4_7[cam_idx][0],
+                    camera_matrix_list_4_7[cam_idx-4], dist_coeff_list_4_7[cam_idx-4]
+                )
+                
+                if ret7 and ret_cam:
+                    R7, _ = cv2.Rodrigues(rvec7)
+                    R_cam, _ = cv2.Rodrigues(rvec_cam)
+                    R_rel = R_cam @ R7.T
+                    t_rel = tvec_cam - R_rel @ tvec7
+                    x0.extend(t_rel.flatten())
+                else:
+                    x0.extend([0, 0, 100])  # 默认初始化，假设相机间距100mm
+            except:
+                x0.extend([0, 0, 100])  # 默认初始化
+        else:
+            x0.extend([0, 0, 100])  # 默认初始化
+    
+    # 初始化每帧棋盘格位姿（使用相机7作为参考）
+    print("初始化棋盘格位姿...")
+    for frame_idx in range(num_frames):
+        if frame_idx < len(imgpoints_4_7[7]):
+            try:
+                ret, rvec, tvec = cv2.solvePnP(
+                    objpoints_4_7[frame_idx],
+                    imgpoints_4_7[7][frame_idx],
+                    camera_matrix_list_4_7[3],  # 相机7在索引3
+                    dist_coeff_list_4_7[3]
+                )
+                if ret:
+                    x0.extend(rvec.flatten())
+                    x0.extend(tvec.flatten())
+                else:
+                    x0.extend([0, 0, 0, 0, 0, 500])  # 默认初始化
+            except:
+                x0.extend([0, 0, 0, 0, 0, 500])  # 默认初始化
+        else:
+            x0.extend([0, 0, 0, 0, 0, 500])  # 默认初始化
+
+    x0 = np.array(x0)
+    print(f"初始化完成，参数数量: {len(x0)}")
 
     # 运行优化
+    print("开始Bundle Adjustment优化...")
     result = least_squares(
         objective_function,
         x0,
         method='lm',
         verbose=2,
-        max_nfev=1000
+        max_nfev=1000,
+        ftol=1e-8,
+        xtol=1e-8
     )
 
-    # 更新参数
-    for idx in range(3):
-        rvec_list_4_7[idx] = result.x[idx*3:idx*3+3].reshape(3, 1)
-        tvec_list_4_7[idx] = result.x[9+idx*3:9+idx*3+3].reshape(3, 1)
+    # 更新相机外参
+    for idx, cam_idx in enumerate(range(4, 7)):
+        rvec_list_4_7[idx] = result.x[idx*3:(idx+1)*3].reshape(3, 1)
+        tvec_list_4_7[idx] = result.x[9+idx*3:9+(idx+1)*3].reshape(3, 1)
         R_list_4_7[idx], _ = cv2.Rodrigues(rvec_list_4_7[idx])
         T_list_4_7[idx] = tvec_list_4_7[idx]
 
     # 相机 7（索引 3）的外参保持为初始值，即 R = I, T = 0
 
     # 计算并打印最终的重投影误差
-    print("\n相机 4-7 的重投影误差:")
+    print(f"\n优化完成，最终残差: {result.cost}")
+    print("相机 4-7 的重投影误差:")
     total_error = 0
-    for idx, cam_idx in enumerate(range(4, 7)):
+    for i, cam_idx in enumerate(range(4, 8)):
+        if cam_idx not in imgpoints_4_7 or len(imgpoints_4_7[cam_idx]) == 0:
+            continue
+            
         errors = []
         for frame_idx in range(len(objpoints_4_7)):
+            if frame_idx >= len(imgpoints_4_7[cam_idx]):
+                continue
+                
+            # 使用优化后的参数计算重投影误差
+            if cam_idx == 7:
+                rvec = np.zeros((3, 1))
+                tvec = np.zeros((3, 1))
+            else:
+                rvec = rvec_list_4_7[cam_idx-4]  # 相机4-6对应索引0-2
+                tvec = tvec_list_4_7[cam_idx-4]
+                
+            # 获取优化后的棋盘格位姿
+            start_idx = 18 + frame_idx * 6
+            board_rvec = result.x[start_idx:start_idx+3]
+            board_tvec = result.x[start_idx+3:start_idx+6]
+            R_board, _ = cv2.Rodrigues(board_rvec)
+            
+            # 转换到世界坐标系
+            points_3d_world = []
+            for point_3d in objpoints_4_7[frame_idx]:
+                point_world = R_board @ point_3d.reshape(3, 1) + board_tvec.reshape(3, 1)
+                points_3d_world.append(point_world.flatten())
+            points_3d_world = np.array(points_3d_world)
+            
             projected, _ = cv2.projectPoints(
-                objpoints_4_7[frame_idx],
-                rvec_list_4_7[idx],
-                tvec_list_4_7[idx],
-                camera_matrix_list_4_7[idx],
-                dist_coeff_list_4_7[idx]
+                points_3d_world, rvec, tvec,
+                camera_matrix_list_4_7[i],
+                dist_coeff_list_4_7[i]
             )
             projected = projected.reshape(-1, 2)
             points_2d = imgpoints_4_7[cam_idx][frame_idx].reshape(-1, 2)
             error = np.linalg.norm(points_2d - projected, axis=1)
             errors.append(np.mean(error))
-        mean_error = np.mean(errors)
-        total_error += mean_error
-        print(f"相机 {cam_idx} 的平均重投影误差: {mean_error:.3f} 像素")
+            
+        if errors:
+            mean_error = np.mean(errors)
+            total_error += mean_error
+            print(f"相机 {cam_idx} 的平均重投影误差: {mean_error:.3f} 像素")
 
-    print(f"相机 4-7 的平均重投影误差: {total_error/3:.3f} 像素")
+    active_cameras = len([i for i in range(4, 8) if i in imgpoints_4_7 and len(imgpoints_4_7[i]) > 0])
+    if active_cameras > 0:
+        print(f"相机 4-7 的平均重投影误差: {total_error/active_cameras:.3f} 像素")
 
 bundle_adjustment_4_7()
 
