@@ -388,7 +388,7 @@ test: 添加测试
 ## 联系方式
 
 - **开发者**: Yknighter424
-- **邮箱**: [请在GitHub上联系]
+- **邮箱**: godlieluyu@gmail.com
 - **项目链接**: https://github.com/Yknighter424/pose-estimation-and-optimization
 
 ## 致谢
